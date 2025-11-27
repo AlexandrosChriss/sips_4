@@ -1,0 +1,133 @@
+#include "I2Cdev.h"
+#include "MPU6050_6Axis_MotionApps20.h"
+#include "M5EPD.h"
+#include <Wire.h>
+
+/* --- Ajout : fonction d’activation du 5V via le PMIC AXP192 --- */
+#define AXP192_ADDR 0x34
+
+void writeAXP(uint8_t reg, uint8_t val) {
+  Wire.beginTransmission(AXP192_ADDR);
+  Wire.write(reg);
+  Wire.write(val);
+  Wire.endTransmission();
+}
+
+void enable5VPortA() {
+  Wire.begin();          // Initialise le bus I2C si pas déjà fait
+  writeAXP(0x12, 0xFF);  // Active toutes les sorties (LDO2, LDO3, DCDC1, etc.)
+  delay(100);
+  Serial.println("5V du Port A activé via AXP192");
+}
+
+/* --- Fin ajout --- */
+
+/* MPU6050 */
+MPU6050 mpu;
+int const INTERRUPT_PIN = 2;
+
+bool blinkState;
+bool DMPReady = false;
+uint8_t MPUIntStatus;
+uint8_t devStatus;
+uint16_t packetSize;
+uint8_t FIFOBuffer[64];
+
+Quaternion q;
+VectorInt16 aa, gy, aaReal, aaWorld;
+VectorFloat gravity;
+float euler[3];
+float ypr[3];
+uint8_t teapotPacket[14] = { '$', 0x02, 0, 0, 0, 0, 0, 0, 0, 0, 0x00, 0x00, '\r', '\n' };
+
+volatile bool MPUInterrupt = false;
+void DMPDataReady() {
+  MPUInterrupt = true;
+}
+
+void setup() {
+#if I2CDEV_IMPLEMENTATION == I2CDEV_ARDUINO_WIRE
+  Wire.begin(25, 32);
+  Wire.setClock(400000);
+#elif I2CDEV_IMPLEMENTATION == I2CDEV_BUILTIN_FASTWIRE
+  Fastwire::setup(400, true);
+#endif
+
+  Serial.begin(115200);
+  while (!Serial)
+    ;
+
+  M5.begin();       // Initialise le M5Paper
+  enable5VPortA();  //  Active le 5V avant d’allumer le MPU6050
+
+  Serial.println(F("Initializing I2C devices..."));
+  mpu.initialize();
+  pinMode(INTERRUPT_PIN, INPUT);
+
+  Serial.println(F("Testing MPU6050 connection..."));
+  if (!mpu.testConnection()) {
+    Serial.println("MPU6050 connection failed");
+    while (true)
+      ;
+  } else {
+    Serial.println("MPU6050 connection successful");
+  }
+
+  Serial.println(F("\nSend any character to begin: "));
+  while (Serial.available() && Serial.read())
+    ;
+  while (!Serial.available())
+    ;
+  while (Serial.available() && Serial.read())
+    ;
+
+  Serial.println(F("Initializing DMP..."));
+  devStatus = mpu.dmpInitialize();
+
+  mpu.setXGyroOffset(0);
+  mpu.setYGyroOffset(0);
+  mpu.setZGyroOffset(0);
+  mpu.setXAccelOffset(0);
+  mpu.setYAccelOffset(0);
+  mpu.setZAccelOffset(0);
+
+  if (devStatus == 0) {
+    mpu.CalibrateAccel(6);
+    mpu.CalibrateGyro(6);
+    Serial.println("Active offsets:");
+    mpu.PrintActiveOffsets();
+    Serial.println(F("Enabling DMP..."));
+    mpu.setDMPEnabled(true);
+
+    Serial.print(F("Enabling interrupt detection (INT pin "));
+    Serial.print(digitalPinToInterrupt(INTERRUPT_PIN));
+    Serial.println(F(")..."));
+    attachInterrupt(digitalPinToInterrupt(INTERRUPT_PIN), DMPDataReady, RISING);
+    MPUIntStatus = mpu.getIntStatus();
+
+    Serial.println(F("DMP ready! Waiting for first interrupt..."));
+    DMPReady = true;
+    packetSize = mpu.dmpGetFIFOPacketSize();
+  } else {
+    Serial.print(F("DMP Initialization failed (code "));
+    Serial.print(devStatus);
+    Serial.println(F(")"));
+  }
+}
+
+void loop() {
+  int16_t ax, ay, az;
+
+  // Lecture accélérations
+  mpu.getAcceleration(&ax, &ay, &az);
+
+  // Affichage
+  Serial.print("Accel X: ");
+  Serial.print(ax);
+  Serial.print("\tY: ");
+  Serial.print(ay);
+  Serial.print("\tZ: ");
+  Serial.println(az);
+
+  delay(20);
+}
